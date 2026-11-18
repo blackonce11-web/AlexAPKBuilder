@@ -1,0 +1,51 @@
+name: Alex APK Cloud Build
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        required: true
+        type: choice
+        options: [debug, release]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - name: Install Android SDK
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Extract project
+        run: |
+          mkdir -p .alexbuild/project
+          unzip -q incoming/project.zip -d .alexbuild/project
+          ROOT=$(find .alexbuild/project -maxdepth 5 \( -name settings.gradle -o -name settings.gradle.kts \) -print -quit | xargs -r dirname)
+          test -n "$ROOT" || (echo 'No Gradle settings file found in ZIP' && exit 2)
+          echo "$ROOT" > .alexbuild/project-root.txt
+          python3 -c "import json,os; print(json.load(open(os.environ['GITHUB_EVENT_PATH']))['inputs']['build_type'])" > .alexbuild/build-type.txt
+      - name: Build APK
+        run: |
+          ROOT=$(cat .alexbuild/project-root.txt)
+          TASK=assembleDebug
+          if [ "$(cat .alexbuild/build-type.txt)" = release ]; then TASK=assembleRelease; fi
+          cd "$ROOT"
+          if [ -f gradlew ]; then chmod +x gradlew; ./gradlew "$TASK" --no-daemon; else gradle "$TASK" --no-daemon; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: alex-apk-output
+          path: .alexbuild/project/**/build/outputs/apk/**/*.apk
+          if-no-files-found: error
+          retention-days: 7
+      - name: Remove temporary source ZIP
+        if: always()
+        run: |
+          if [ -f incoming/project.zip ]; then git rm -f incoming/project.zip; git config user.name github-actions[bot]; git config user.email 41898282+github-actions[bot]@users.noreply.github.com; git commit -m 'Remove temporary project ZIP' || true; git push || true; fi
